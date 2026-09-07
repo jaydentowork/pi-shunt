@@ -47,6 +47,19 @@ A `tool_call` extension in this package blocks oversized reads before they happe
 - Workers' own reads are exempt — recursion would deadlock.
 
 If the gate fires without a worker being available, it warns instead of blocking, and tells you how to configure.
+## Configuration
+
+The threshold, byte ceiling, and worker model can all be edited at runtime with the bundled slash command:
+
+- `/shunt` — menu of settings
+- `/shunt threshold 500` — set `SHUNT_MIN_LINES`
+- `/shunt ceiling 131072` — set `SHUNT_BYTE_CEILING`
+- `/shunt model` — pick from the registered models (or `/shunt model clear`)
+- `/shunt show` — print current values
+- `/shunt reset` — remove all shunt entries from settings
+- `/shunt help` — quick reference
+
+Edits persist to `~/.pi/agent/settings.json`. They take effect after `/reload` or a restart.
 
 ## When shunt does not apply
 

@@ -97,8 +97,29 @@ The skill spells out the same rules in `skills/shunt/SKILL.md`.
 npm run selfcheck
 ```
 
-23 assertions covering threshold boundaries, bounded-read validation (offset alone is NOT bounded), missing/invalid configuration, garbage string handling, bash routing, and the worker-exemption contract. Pure Node — no transpiler, no external deps, and the same `decide.mjs` the extension uses.
+### Edit at runtime: `/shunt`
 
+Run `/shunt` from any pi session for a menu, or call a subcommand directly:
+
+```
+/shunt threshold 500
+/shunt ceiling 131072
+/shunt model           # pick from your registered models
+/shunt model clear
+/shunt show
+/shunt reset
+/shunt help
+```
+
+Edits persist to `~/.pi/agent/settings.json` and take effect after `/reload` or a restart. Settings-driven overrides are honoured by the extension at startup, so the gate and the workers read the values without env vars being set in your shell.
+
+## Self-check
+
+```bash
+npm run selfcheck
+```
+
+43 assertions covering threshold boundaries, bounded-read validation (offset alone is NOT bounded), missing/invalid configuration, garbage string handling, bash routing, settings round-trip (parse, apply, model override, removal), and the worker-exemption contract. Pure Node — no transpiler, no external deps, and the same `decide.mjs` and `settings.mjs` the extension uses.
 ## Attribution
 
 Inspired by Dimitri Mazmanov's "Portal by Spotify cut my Claude Code token usage by 90%" (Spotify Engineering, Sep 2026). The original ships as a Claude Code plugin against Spotify's Portal/AiKA backend; this package re-implements the same shape inside pi, with subagents instead of a hosted backend.

@@ -31,6 +31,15 @@ import {
   DEFAULT_BYTE_CEILING,
   DEFAULT_MAX_LIMIT,
 } from "../src/decide.mjs";
+import {
+  applyEdits,
+  parsePositiveInt,
+  parseSettings,
+  readCommonWorkerModel,
+  readEnvOverrides,
+  formatSnapshot,
+  SHUNT_PACKAGE,
+} from "../src/settings.mjs";
 
 let failures = 0;
 let passes = 0;
@@ -217,9 +226,70 @@ group("bash routing", () => {
   check("plain cat of small file allows", small.action === "allow", JSON.stringify(small));
 });
 
-// --- worker exemption contract ---
+// --- settings round-trip ---
+group("settings round-trip", () => {
+  // parseSettings tolerates garbage and empty input.
+  check("parseSettings empty", JSON.stringify(parseSettings("")) === "{}");
+  check("parseSettings garbage", JSON.stringify(parseSettings("not json{")) === "{}");
+  check("parseSettings array is ignored", JSON.stringify(parseSettings("[]")) === "{}");
+  const ok = parseSettings('{"env": {"SHUNT_MIN_LINES": "500"}}');
+  check("parseSettings valid JSON", readEnvOverrides(ok, "SHUNT_MIN_LINES") === 500);
+
+  // parsePositiveInt validates.
+  check("parsePositiveInt valid", parsePositiveInt("500") === 500);
+  check("parsePositiveInt junk -> null", parsePositiveInt("500junk") === null);
+  check("parsePositiveInt zero -> null", parsePositiveInt("0") === null);
+  check("parsePositiveInt negative -> null", parsePositiveInt("-5") === null);
+
+  // applyEdits on a fresh object sets the env key.
+  let s = applyEdits({}, { envKey: "SHUNT_MIN_LINES", envValue: "500" });
+  check("applyEdits sets env key", readEnvOverrides(s, "SHUNT_MIN_LINES") === 500);
+
+  // applyEdits overwrites existing env keys.
+  s = applyEdits(s, { envKey: "SHUNT_MIN_LINES", envValue: "750" });
+  check("applyEdits overwrites", readEnvOverrides(s, "SHUNT_MIN_LINES") === 750);
+
+  // applyEdits with envValue: null deletes the env key.
+  s = applyEdits(s, { envKey: "SHUNT_MIN_LINES", envValue: null });
+  check("applyEdits removes key when null", readEnvOverrides(s, "SHUNT_MIN_LINES") === null);
+
+  // applyEdits preserves other env keys.
+  s = applyEdits({ env: { OTHER: "x" } }, { envKey: "SHUNT_MIN_LINES", envValue: "100" });
+  check("applyEdits preserves other env keys", s.env.OTHER === "x" && readEnvOverrides(s, "SHUNT_MIN_LINES") === 100);
+
+  // Model overrides.
+  s = applyEdits({}, { modelId: "anthropic/claude-haiku-4-5" });
+  const expectedReader = `${SHUNT_PACKAGE}.bulk-reader`;
+  const expectedWriter = `${SHUNT_PACKAGE}.code-writer`;
+  check("model override set on bulk-reader", readCommonWorkerModel(s) === "anthropic/claude-haiku-4-5");
+  check("model override covers both workers", s.subagents.agentOverrides[expectedReader].model === s.subagents.agentOverrides[expectedWriter].model);
+
+  // Clear model override.
+  s = applyEdits(s, { modelId: null });
+  check("model override cleared", readCommonWorkerModel(s) === null);
+  check("subagents removed when empty", s.subagents === undefined);
+
+  // readCommonWorkerModel returns null when workers disagree.
+  s = {
+    subagents: {
+      agentOverrides: {
+        [`${SHUNT_PACKAGE}.bulk-reader`]: { model: "a" },
+        [`${SHUNT_PACKAGE}.code-writer`]: { model: "b" },
+      },
+    },
+  };
+  check("readCommonWorkerModel returns bulk-reader when workers disagree", readCommonWorkerModel(s) === "a");
+
+  // formatSnapshot includes all three keys.
+  const snap = formatSnapshot({});
+  check("formatSnapshot mentions threshold", snap.includes("SHUNT_MIN_LINES"));
+  check("formatSnapshot mentions ceiling", snap.includes("SHUNT_BYTE_CEILING"));
+  check("formatSnapshot mentions model", snap.includes("worker model"));
+});
+
+// --- worker exemption ---
 group("worker exemption", () => {
-  // The parent extension runs only in the parent's tool_call stream. Workers
+  // The parent extension runs only in the parent's tool_call stream.
   // are spawned by pi-subagents as separate processes; the parent's listener
   // is not invoked for worker reads. The exemption predicate therefore lives
   // in the EXTENSION, not in decide.mjs, and must run before any decide()

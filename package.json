@@ -1,7 +1,6 @@
 {
   "name": "@jaydentowork/pi-shunt",
-  "version": "0.1.1",
-  "description": "Route bulk file reads and boilerplate code generation to a cheap subagent. Pi-native port of Spotify's shunt idea.",
+  "version": "0.2.0",
   "license": "MIT",
   "type": "module",
   "keywords": [
