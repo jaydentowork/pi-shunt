@@ -24,6 +24,10 @@
  *     selfcheck asserts this understanding.
  */
 
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const pkgJson = require("../package.json");
+
 import {
   decideShunt,
   resolveConfig,
@@ -334,6 +338,33 @@ group("model picker filtering", () => {
   };
   check("duplicates deduped", listUsable(dup).length === 1);
 });
+
+// --- manifest shape ---
+group("manifest shape", () => {
+  const pkg = pkgJson;
+  const fromPiSubagents =
+    pkg["pi-subagents"] && Array.isArray(pkg["pi-subagents"].agents)
+      ? pkg["pi-subagents"].agents
+      : null;
+  const fromPiSubagentsNested =
+    pkg.pi && pkg.pi.subagents && Array.isArray(pkg.pi.subagents.agents)
+      ? pkg.pi.subagents.agents
+      : null;
+  check(
+    "agents registered under pi-subagents or pi.subagents",
+    fromPiSubagents !== null || fromPiSubagentsNested !== null,
+    "neither pkg[pi-subagents].agents nor pkg.pi.subagents.agents is set",
+  );
+  check(
+    "agents path is non-empty",
+    (fromPiSubagents ?? fromPiSubagentsNested ?? []).length > 0,
+  );
+  check(
+    "pkg.pi.agents is NOT set (no-op, confuses readers)",
+    pkg.pi?.agents === undefined,
+  );
+});
+
 
 // --- worker exemption ---
 group("worker exemption", () => {

@@ -68,7 +68,9 @@ The gate lets a read through only when **both** `offset` and `limit` are set and
 
 ### Worker model
 
-Default: `anthropic/claude-haiku-4-5`. Override per scope without editing installed files. In `~/.pi/agent/settings.json` (user) or `.pi/settings.json` (project, wins):
+
+> **Note:** the shipped default `anthropic/claude-haiku-4-5` only resolves if you have an Anthropic provider configured. Override via the override block below, the `/shunt model` command, or your registry's `defaultProvider`. A spawn against an unknown model id fails.
+Override per scope without editing installed files. In `~/.pi/agent/settings.json` (user) or `.pi/settings.json` (project, wins):
 
 ```json
 {
