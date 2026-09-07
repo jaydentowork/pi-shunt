@@ -1,6 +1,6 @@
 /**
  * pi-shunt extension: gate oversized reads in the parent session, route the
- * parent to bulk-reader via /skill:shunt. Also exposes a /shunt command for
+ * parent to bulk-reader via /skill:shunt-routing. Also exposes a /shunt command for
  * editing the threshold, byte ceiling, and worker model without touching env
  * vars or settings files by hand.
  *

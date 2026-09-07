@@ -1,5 +1,5 @@
 ---
-name: shunt
+name: shunt-routing
 description: Route bulk file reads and boilerplate code generation to a cheap worker subagent instead of the parent model. Use when a question spans multiple large files, or when generating tests/configs/type stubs from existing patterns. Avoid for debugging, architectural decisions, safety-critical code, or small reads where delegation latency exceeds savings.
 ---
 

@@ -97,20 +97,20 @@ export function decideShunt({ toolName, input, fileSize, config }) {
     if (fileSize === null) {
       return {
         action: "warn",
-        reason: `shunt: cannot stat ${path}; allow and consider /skill:shunt for large-file delegation.`,
+        reason: `shunt: cannot stat ${path}; allow and consider /skill:shunt-routing for large-file delegation.`,
       };
     }
     if (fileSize > cfg.byteCeiling) {
       return {
         action: "block",
-        reason: `shunt: ${path} is ${fileSize}B (>${cfg.byteCeiling}B ceiling). Use /skill:shunt -> bulk-reader.`,
+        reason: `shunt: ${path} is ${fileSize}B (>${cfg.byteCeiling}B ceiling). Use /skill:shunt-routing -> bulk-reader.`,
       };
     }
     const estimated = estimateLinesFromBytes(fileSize);
     if (estimated > cfg.minLines) {
       return {
         action: "block",
-        reason: `shunt: ${path} is ~${estimated} lines (>${cfg.minLines}). Use /skill:shunt -> bulk-reader. Pass offset+limit (limit <= ${cfg.maxLimit}) for a targeted read.`,
+        reason: `shunt: ${path} is ~${estimated} lines (>${cfg.minLines}). Use /skill:shunt-routing -> bulk-reader. Pass offset+limit (limit <= ${cfg.maxLimit}) for a targeted read.`,
       };
     }
     return { action: "allow" };
@@ -129,7 +129,7 @@ export function decideShunt({ toolName, input, fileSize, config }) {
     if (estimated > cfg.minLines) {
       return {
         action: "block",
-        reason: `shunt: bash read of ${target} is ~${estimated} lines. Pipe through head/grep for targeted reads, or use /skill:shunt -> bulk-reader.`,
+        reason: `shunt: bash read of ${target} is ~${estimated} lines. Pipe through head/grep for targeted reads, or use /skill:shunt-routing -> bulk-reader.`,
       };
     }
     return { action: "allow" };

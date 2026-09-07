@@ -27,6 +27,10 @@
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const pkgJson = require("../package.json");
+import { fileURLToPath } from "node:url";
+const here = fileURLToPath(new URL(".", import.meta.url));
+const { readdirSync, statSync, readFileSync: rfs } = require("node:fs");
+const { join: pathJoin } = require("node:path");
 
 import {
   decideShunt,
@@ -365,7 +369,6 @@ group("manifest shape", () => {
   );
 });
 
-
 // --- worker exemption ---
 group("worker exemption", () => {
   // The parent extension runs only in the parent's tool_call stream.
@@ -376,6 +379,36 @@ group("worker exemption", () => {
   // to move exemption into decide.mjs will break this test.
   const exporterExportsExemption = false;
   check("exemption lives in extension, not decide.mjs", exporterExportsExemption === false);
+});
+
+// --- skill vs command name ---
+group('skill vs command name', () => {
+  const skillsDir = pathJoin(here, '..', 'skills');
+  const skillsToCheck = [];
+  function walk(dir) {
+    for (const entry of readdirSync(dir)) {
+      const full = pathJoin(dir, entry);
+      const st = statSync(full);
+      if (st.isDirectory()) walk(full);
+      else if (entry === 'SKILL.md') skillsToCheck.push(full);
+    }
+  }
+  try { walk(skillsDir); } catch {}
+  const RESERVED = ['shunt'];
+  let collision = null;
+  for (const file of skillsToCheck) {
+    const t = rfs(file, 'utf8');
+    const m = t.match(/^---\r?\n([\s\S]+?)\r?\n---/);
+    if (!m) continue;
+    const n = m[1].match(/^name:\s*(.+?)\s*$/m);
+    if (!n) continue;
+    if (RESERVED.includes(n[1].trim())) { collision = { file, name: n[1].trim() }; break; }
+  }
+  check(
+    'no skill name collides with a registered command name',
+    collision === null,
+    collision ? 'skill ' + collision.name + ' in ' + collision.file + ' would register as /skill:' + collision.name + ', colliding with /' + collision.name : null
+  );
 });
 
 // --- summary ---

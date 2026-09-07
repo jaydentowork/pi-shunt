@@ -40,7 +40,7 @@ This pulls the package and registers the extension, skill, and two worker agents
 pi install npm:pi-subagents
 ```
 
-Then in any pi session, run `/skill:shunt` to see the routing rules, or just ask a question that spans several large files. The gate will block the parent from reading those files directly. The parent then calls `pi-shunt.bulk-reader`, gets a bullet summary, and reasons on top of it.
+Then in any pi session, run `/skill:shunt-routing` to see the routing rules, or just ask a question that spans several large files. The gate will block the parent from reading those files directly. The parent then calls `pi-shunt.bulk-reader`, gets a bullet summary, and reasons on top of it.
 
 ## Configure
 
