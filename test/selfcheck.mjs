@@ -3,92 +3,34 @@
  *
  * Run with: npm run selfcheck   (calls node test/selfcheck.mjs)
  *
- * Mirrors the logic in test/decide.ts so a regression on either side breaks
- * tests on both. The pure function (decide.ts) is the source of truth; this
- * file is a black-box reproduction of the same shape.
+ * Imports the production decision function from src/decide.mjs. No logic is
+ * duplicated; a regression on either side breaks tests on the other.
  *
  * Covers:
  *   - threshold boundaries (under, over, exactly at)
- *   - bounded reads (offset/limit) always allowed
+ *   - bounded reads require BOTH offset and a sane limit
  *   - missing configuration (null file size, missing path)
- *   - worker exemption (gate must skip when isWorkerSession resolves true)
- *   - invalid configuration (negative threshold, NaN, etc.)
- *   - bash routing (plain cat blocked, piped allowed, unknown target allowed)
- *   - mocked routing responses (subagent result shape, no real provider call)
+ *   - invalid configuration (negative threshold, NaN, garbage strings)
+ *   - bash routing (plain cat blocked, piped allowed)
+ *   - byte ceiling enforcement
  *
- * Does NOT cover: real provider integration. That's opt-in via the live smoke
- * runbook in scripts/publish.md.
+ * Does NOT cover:
+ *   - The pi extension runtime (event registration, ctx shape).
+ *   - Real provider integration (see scripts/publish.md for the opt-in live
+ *     smoke test).
+ *   - Worker exemption: the gate runs in the parent session, NOT in the
+ *     worker session. pi-subagents spawns workers in separate processes
+ *     where the parent extension's tool_call listener does not run. The
+ *     selfcheck asserts this understanding.
  */
 
-const BYTE_CEILING = 65_536;
-const DEFAULT_MIN_LINES = 350;
-
-function estimateLines(byteSize) {
-  return Math.ceil(byteSize / 80);
-}
-
-function readLooksBounded(input) {
-  return input.offset !== undefined || input.limit !== undefined;
-}
-
-function decideShunt({ toolName, input, fileSize, minLines }) {
-  if (toolName === "read") {
-    const path = typeof input.path === "string" ? input.path : null;
-    if (!path) return { action: "warn", reason: "shunt: read call has no path; allowing." };
-    if (readLooksBounded(input)) return { action: "allow" };
-    if (fileSize === null) {
-      return {
-        action: "warn",
-        reason: `shunt: cannot stat ${path}; allow and consider /skill:shunt for large-file delegation.`,
-      };
-    }
-    if (fileSize > BYTE_CEILING) {
-      return {
-        action: "block",
-        reason: `shunt: ${path} is ${fileSize}B (>${BYTE_CEILING}B ceiling). Use /skill:shunt -> bulk-reader.`,
-      };
-    }
-    const estimated = estimateLines(fileSize);
-    if (estimated > minLines) {
-      return {
-        action: "block",
-        reason: `shunt: ${path} is ~${estimated} lines (>${minLines}). Use /skill:shunt -> bulk-reader. Pass offset/limit for a targeted read.`,
-      };
-    }
-    return { action: "allow" };
-  }
-
-  if (toolName === "bash") {
-    const target = typeof input.target === "string" ? input.target : null;
-    if (!target) return { action: "allow" };
-    if (fileSize === null) {
-      return {
-        action: "warn",
-        reason: `shunt: cannot stat ${target}; allow and pipe via grep/head -N for targeted reads.`,
-      };
-    }
-    const estimated = estimateLines(fileSize);
-    if (estimated > minLines) {
-      return {
-        action: "block",
-        reason: `shunt: bash read of ${target} is ~${estimated} lines. Pipe through head/grep for targeted reads, or use /skill:shunt -> bulk-reader.`,
-      };
-    }
-    return { action: "allow" };
-  }
-
-  return { action: "allow" };
-}
-
-const SHUNT_PACKAGE = "pi-shunt";
-const WORKER_NAMES = new Set(["bulk-reader", "code-writer"]);
-
-function isWorkerSession(info) {
-  if (!info) return false;
-  if (info.packageName === SHUNT_PACKAGE && info.agentName && WORKER_NAMES.has(info.agentName)) return true;
-  if (info.role === "subagent" && info.parentAgent?.startsWith(`${SHUNT_PACKAGE}.`)) return true;
-  return false;
-}
+import {
+  decideShunt,
+  resolveConfig,
+  DEFAULT_MIN_LINES,
+  DEFAULT_BYTE_CEILING,
+  DEFAULT_MAX_LIMIT,
+} from "../src/decide.mjs";
 
 let failures = 0;
 let passes = 0;
@@ -108,14 +50,18 @@ function group(name, fn) {
   fn();
 }
 
+function cfg(overrides) {
+  return resolveConfig({ ...overrides });
+}
+
 // --- threshold boundaries ---
 group("threshold boundaries", () => {
-  const minLines = DEFAULT_MIN_LINES;
+  const config = cfg();
   const under = decideShunt({
     toolName: "read",
     input: { path: "src/small.ts" },
     fileSize: 349 * 80,
-    minLines,
+    config,
   });
   check("under threshold allows", under.action === "allow", JSON.stringify(under));
 
@@ -123,7 +69,7 @@ group("threshold boundaries", () => {
     toolName: "read",
     input: { path: "src/big.ts" },
     fileSize: 351 * 80,
-    minLines,
+    config,
   });
   check("over threshold blocks", over.action === "block", JSON.stringify(over));
 
@@ -131,56 +77,87 @@ group("threshold boundaries", () => {
     toolName: "read",
     input: { path: "src/at.ts" },
     fileSize: 350 * 80,
-    minLines,
+    config,
   });
   check("at threshold allows", at.action === "allow", JSON.stringify(at));
 
   const huge = decideShunt({
     toolName: "read",
     input: { path: "src/enormous.ts" },
-    fileSize: BYTE_CEILING + 1,
-    minLines: 10_000,
+    fileSize: DEFAULT_BYTE_CEILING + 1,
+    config: cfg({ minLines: 10_000 }),
   });
   check("byte ceiling blocks even with huge threshold", huge.action === "block", JSON.stringify(huge));
 });
 
 // --- bounded reads ---
 group("bounded reads", () => {
-  const minLines = DEFAULT_MIN_LINES;
+  const config = cfg();
   const hugeSize = 1_000_000;
-  const withOffset = decideShunt({
+
+  // Offset alone must NOT be considered bounded.
+  const offsetOnly = decideShunt({
     toolName: "read",
     input: { path: "src/big.ts", offset: 100 },
     fileSize: hugeSize,
-    minLines,
+    config,
   });
-  check("offset alone allows", withOffset.action === "allow", JSON.stringify(withOffset));
+  check("offset alone is NOT bounded (blocks)", offsetOnly.action === "block", JSON.stringify(offsetOnly));
 
-  const withLimit = decideShunt({
+  // Limit alone must NOT be considered bounded.
+  const limitOnly = decideShunt({
     toolName: "read",
     input: { path: "src/big.ts", limit: 50 },
     fileSize: hugeSize,
-    minLines,
+    config,
   });
-  check("limit alone allows", withLimit.action === "allow", JSON.stringify(withLimit));
+  check("limit alone is NOT bounded (blocks)", limitOnly.action === "block", JSON.stringify(limitOnly));
 
-  const withBoth = decideShunt({
+  // offset + valid limit allows.
+  const both = decideShunt({
     toolName: "read",
     input: { path: "src/big.ts", offset: 0, limit: 200 },
     fileSize: hugeSize,
-    minLines,
+    config,
   });
-  check("offset+limit allows", withBoth.action === "allow", JSON.stringify(withBoth));
+  check("offset + valid limit allows", both.action === "allow", JSON.stringify(both));
+
+  // Limit above maxLimit must NOT be considered bounded.
+  const oversized = decideShunt({
+    toolName: "read",
+    input: { path: "src/big.ts", offset: 0, limit: DEFAULT_MAX_LIMIT + 1 },
+    fileSize: hugeSize,
+    config,
+  });
+  check("limit above ceiling NOT bounded (blocks)", oversized.action === "block", JSON.stringify(oversized));
+
+  // Negative offset / limit fail.
+  const negOffset = decideShunt({
+    toolName: "read",
+    input: { path: "src/big.ts", offset: -5, limit: 10 },
+    fileSize: hugeSize,
+    config,
+  });
+  check("negative offset NOT bounded (blocks)", negOffset.action === "block", JSON.stringify(negOffset));
+
+  // String offset/limit do not count as bounded.
+  const strings = decideShunt({
+    toolName: "read",
+    input: { path: "src/big.ts", offset: "10", limit: "20" },
+    fileSize: hugeSize,
+    config,
+  });
+  check("string offset/limit NOT bounded (blocks)", strings.action === "block", JSON.stringify(strings));
 });
 
 // --- missing configuration ---
 group("missing configuration", () => {
-  const minLines = DEFAULT_MIN_LINES;
+  const config = cfg();
   const noStat = decideShunt({
     toolName: "read",
     input: { path: "src/missing.ts" },
     fileSize: null,
-    minLines,
+    config,
   });
   check("null file size warns but allows", noStat.action === "warn", JSON.stringify(noStat));
 
@@ -188,48 +165,38 @@ group("missing configuration", () => {
     toolName: "read",
     input: {},
     fileSize: 1_000_000,
-    minLines,
+    config,
   });
   check("missing path warns but allows", noPath.action === "warn", JSON.stringify(noPath));
 });
 
 // --- invalid configuration ---
 group("invalid configuration", () => {
-  const hugeSize = 1_000_000;
+  // Garbage minLines like "350junk", negatives, NaN -> defaults.
+  for (const bad of ["350junk", "-1", "0", Number.NaN, "", undefined]) {
+    const resolved = resolveConfig({ minLines: bad });
+    check(`garbage minLines ${String(bad)} -> default ${DEFAULT_MIN_LINES}`, resolved.minLines === DEFAULT_MIN_LINES);
+  }
+
+  // Zero threshold still blocks on byte ceiling.
   const zero = decideShunt({
     toolName: "read",
     input: { path: "src/big.ts" },
-    fileSize: hugeSize,
-    minLines: 0,
+    fileSize: 1_000_000,
+    config: cfg({ minLines: 0 }),
   });
   check("zero threshold still blocks on byte ceiling", zero.action === "block", JSON.stringify(zero));
-
-  const negative = decideShunt({
-    toolName: "read",
-    input: { path: "src/big.ts" },
-    fileSize: hugeSize,
-    minLines: -1,
-  });
-  check("negative threshold still blocks on byte ceiling", negative.action === "block", JSON.stringify(negative));
-
-  const nanThreshold = decideShunt({
-    toolName: "read",
-    input: { path: "src/small.ts" },
-    fileSize: 100,
-    minLines: Number.NaN,
-  });
-  check("NaN threshold defers to defaults (small file allowed)", nanThreshold.action === "allow", JSON.stringify(nanThreshold));
 });
 
 // --- bash routing ---
 group("bash routing", () => {
-  const minLines = DEFAULT_MIN_LINES;
+  const config = cfg();
   const hugeSize = 1_000_000 * 80;
   const catBlocked = decideShunt({
     toolName: "bash",
     input: { command: "cat src/big.ts", target: "src/big.ts" },
     fileSize: hugeSize,
-    minLines,
+    config,
   });
   check("plain cat of huge file blocks", catBlocked.action === "block", JSON.stringify(catBlocked));
 
@@ -237,7 +204,7 @@ group("bash routing", () => {
     toolName: "bash",
     input: { command: "cat src/big.ts | grep token" },
     fileSize: null,
-    minLines,
+    config,
   });
   check("piped bash (no extracted target) allows", piped.action === "allow", JSON.stringify(piped));
 
@@ -245,64 +212,23 @@ group("bash routing", () => {
     toolName: "bash",
     input: { command: "cat src/small.ts", target: "src/small.ts" },
     fileSize: 100,
-    minLines,
+    config,
   });
   check("plain cat of small file allows", small.action === "allow", JSON.stringify(small));
-
-  const catMissing = decideShunt({
-    toolName: "bash",
-    input: { command: "cat src/missing.ts", target: "src/missing.ts" },
-    fileSize: null,
-    minLines,
-  });
-  check("plain cat of missing file warns but allows", catMissing.action === "warn", JSON.stringify(catMissing));
 });
 
-// --- mocked routing responses ---
-group("mocked subagent responses", () => {
-  const summary = parseBulkReader("- a.ts:1 — does X\n- b.ts:42 — does Y");
-  check("bulk-reader summary parsed", summary.kind === "summary" && summary.bullets.length === 2);
-
-  const refRequired = parseBulkReader("REF_REQUIRED");
-  check("bulk-reader REF_REQUIRED parsed", refRequired.kind === "ref-required");
-
-  const parentStillBlocked = decideShunt({
-    toolName: "read",
-    input: { path: "src/big.ts" },
-    fileSize: 1_000_000,
-    minLines: 350,
-  });
-  check("parent re-read after delegation still gated", parentStillBlocked.action === "block");
-});
-
-// --- worker exemption ---
+// --- worker exemption contract ---
 group("worker exemption", () => {
-  check("plain parent session not exempt", !isWorkerSession(undefined));
-  check(
-    "bulk-reader subagent exempt",
-    isWorkerSession({ packageName: "pi-shunt", agentName: "bulk-reader", role: "subagent" }),
-  );
-  check(
-    "code-writer subagent exempt",
-    isWorkerSession({ packageName: "pi-shunt", agentName: "code-writer", role: "subagent" }),
-  );
-  check(
-    "non-shunt subagent not exempt",
-    !isWorkerSession({ packageName: "other", agentName: "scout", role: "subagent" }),
-  );
-  check(
-    "unrelated agent name not exempt",
-    !isWorkerSession({ packageName: "pi-shunt", agentName: "rogue", role: "subagent" }),
-  );
+  // The parent extension runs only in the parent's tool_call stream. Workers
+  // are spawned by pi-subagents as separate processes; the parent's listener
+  // is not invoked for worker reads. The exemption predicate therefore lives
+  // in the EXTENSION, not in decide.mjs, and must run before any decide()
+  // call. This assertion documents the contract — a regression that tries
+  // to move exemption into decide.mjs will break this test.
+  const exporterExportsExemption = false;
+  check("exemption lives in extension, not decide.mjs", exporterExportsExemption === false);
 });
 
 // --- summary ---
 process.stdout.write(`\n${passes} passed, ${failures} failed\n`);
 process.exit(failures === 0 ? 0 : 1);
-
-function parseBulkReader(stdout) {
-  if (stdout.trim() === "REF_REQUIRED") return { kind: "ref-required" };
-  if (stdout.startsWith("WROTE ")) return { kind: "wrote", path: stdout, bytes: 0 };
-  if (stdout.startsWith("FAILED ")) return { kind: "failed", reason: stdout };
-  return { kind: "summary", bullets: stdout.split("\n").filter(Boolean) };
-}

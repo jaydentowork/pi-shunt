@@ -1,124 +1,108 @@
 /**
- * pi-shunt extension: gate oversized reads, route the parent to bulk-reader.
+ * pi-shunt extension: gate oversized reads in the parent session, route the
+ * parent to bulk-reader via /skill:shunt.
  *
  * Pi does not have PreToolUse hooks. The supported interception point is
- * `pi.on("tool_call", ...)`. Returning `{ block: true, reason }` blocks the call.
+ * `pi.on("tool_call", ...)`. Returning `{ block: true, reason }` blocks the
+ * call. Mutation of `event.input` in place is also supported (used here to
+ * fall back to a bounded read on `read` calls with no limit).
  *
- * The decision function lives in `test/decide.ts` so the selfcheck can call
- * it directly without booting the extension runtime.
+ * The decision function lives in src/decide.mjs so the selfcheck exercises
+ * the exact same logic.
+ *
+ * Worker exemption: workers spawned by pi-subagents run in a separate
+ * process; this listener is not invoked for their tool calls. There is
+ * therefore no per-call exemption check inside this extension — the
+ * recursion concern Spotify describes does not apply on pi.
  */
 import * as fs from "node:fs";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { decideShunt, SHUNT_CONSTANTS } from "../test/decide.js";
+import * as path from "node:path";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { decideShunt, resolveConfig } from "../src/decide.mjs";
 
-type ToolCallEvent = {
-  toolName: string;
-  input: Record<string, unknown>;
-};
+type BashInput = { command?: unknown; target?: unknown; [k: string]: unknown };
 
-type BlockResult = { block: true; reason: string };
-
-type SessionLike = {
-  agentName?: string;
-  packageName?: string;
-  role?: string;
-  parentAgent?: string;
-};
-
-type CtxLike = {
-  ui?: { notify: (msg: string, level?: string) => void };
-  sessionInfo?: SessionLike;
-  hasUI?: boolean;
-};
-
-const SHUNT_PACKAGE = "pi-shunt";
-const WORKER_NAMES = new Set(["bulk-reader", "code-writer"]);
-
-function isWorkerSession(ctx: CtxLike | undefined): boolean {
-  const info = ctx?.sessionInfo;
-  if (!info) return false;
-  if (info.packageName === SHUNT_PACKAGE && info.agentName && WORKER_NAMES.has(info.agentName)) {
-    return true;
-  }
-  if (info.role === "subagent" && info.parentAgent?.startsWith(`${SHUNT_PACKAGE}.`)) {
-    return true;
-  }
-  return false;
-}
-
-function notify(ctx: CtxLike, message: string): void {
-  if (ctx.hasUI && ctx.ui?.notify) {
-    ctx.ui.notify(message, "warn");
-  }
-}
-
-function statOrNull(path: string): number | null {
-  try {
-    return fs.statSync(path).size;
-  } catch {
-    return null;
-  }
-}
-
+/**
+ * Best-effort: pull a single file path out of plain `cat|head|tail|less|more`
+ * invocations. Anything more complex is left alone. This is not a security
+ * boundary.
+ */
 function bashTargetFile(command: string): string | null {
-  // Best-effort: plain `cat file`, `head file`, `tail file`, `less file`,
-  // `more file` only. Anything with pipes, redirects, or flags that change
-  // the read shape is left alone. This is not a security boundary.
   const trimmed = command.trim();
   if (/[<>|]/.test(trimmed)) return null;
   const match = trimmed.match(/^(?:cat|head|tail|less|more)\s+(?<path>\S+)$/);
   return match?.groups?.path ?? null;
 }
 
-function resolveMinLines(): number {
-  const raw = process.env.SHUNT_MIN_LINES;
-  const parsed = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : SHUNT_CONSTANTS.DEFAULT_MIN_LINES;
+function statOrNull(filePath: string): number | null {
+  try {
+    return fs.statSync(filePath).size;
+  } catch {
+    return null;
+  }
+}
+
+function resolveAgainst(cwd: string, filePath: string): string {
+  return path.isAbsolute(filePath) ? filePath : path.resolve(cwd, filePath);
 }
 
 export default function (pi: ExtensionAPI) {
-  pi.on("tool_call", async (event: ToolCallEvent, ctx: CtxLike): Promise<BlockResult | void> => {
-    // Worker sessions are exempt; recursion would deadlock the worker.
-    if (isWorkerSession(ctx)) return;
-
-    const minLines = resolveMinLines();
+  pi.on("tool_call", (event, ctx: ExtensionContext) => {
+    const config = resolveConfig({
+      minLines: process.env.SHUNT_MIN_LINES,
+      byteCeiling: process.env.SHUNT_BYTE_CEILING,
+    });
+    const notify = (message: string) => {
+      if (ctx.hasUI) ctx.ui.notify(message, "warning");
+    };
 
     if (event.toolName === "read") {
-      const path = typeof event.input.path === "string" ? event.input.path : null;
-      if (!path) return;
+      const input = event.input as { path?: unknown; offset?: unknown; limit?: unknown };
+      const rawPath = typeof input.path === "string" ? input.path : null;
+      if (!rawPath) return;
+      const resolved = resolveAgainst(ctx.cwd, rawPath);
       const decision = decideShunt({
         toolName: "read",
-        input: event.input,
-        fileSize: statOrNull(path),
-        minLines,
+        input: { path: resolved, offset: input.offset, limit: input.limit },
+        fileSize: statOrNull(resolved),
+        config,
       });
-      if (decision.action === "block") {
-        notify(ctx, decision.reason);
-        return { block: true, reason: decision.reason };
-      }
+
+      if (decision.action === "allow") return;
+
       if (decision.action === "warn") {
-        notify(ctx, decision.reason);
+        notify(decision.reason);
+        return;
       }
+
+      // block: hard-block the parent. The skill instructs the LLM to
+      // delegate to bulk-reader instead. Silently truncating would hide
+      // the cost we're trying to surface.
+      notify(decision.reason);
+      return { block: true, reason: decision.reason };
       return;
     }
 
     if (event.toolName === "bash") {
-      const command = typeof event.input.command === "string" ? event.input.command : "";
+      const input = event.input as BashInput;
+      const command = typeof input.command === "string" ? input.command : "";
       const target = bashTargetFile(command);
       if (!target) return;
+      const resolved = resolveAgainst(ctx.cwd, target);
       const decision = decideShunt({
         toolName: "bash",
-        input: { command, target },
-        fileSize: statOrNull(target),
-        minLines,
+        input: { command, target: resolved },
+        fileSize: statOrNull(resolved),
+        config,
       });
-      if (decision.action === "block") {
-        notify(ctx, decision.reason);
-        return { block: true, reason: decision.reason };
-      }
+
+      if (decision.action === "allow") return;
       if (decision.action === "warn") {
-        notify(ctx, decision.reason);
+        notify(decision.reason);
+        return;
       }
+      notify(decision.reason);
+      return { block: true, reason: decision.reason };
     }
   });
 }

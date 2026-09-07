@@ -1,7 +1,7 @@
 {
   "name": "@jaydentowork/pi-shunt",
-  "version": "0.1.0",
-  "description": "Route bulk file reads and boilerplate code generation to a cheaper model subagent. Pi-native port of Spotify's shunt idea.",
+  "version": "0.1.1",
+  "description": "Route bulk file reads and boilerplate code generation to a cheap subagent. Pi-native port of Spotify's shunt idea.",
   "license": "MIT",
   "type": "module",
   "keywords": [
@@ -13,6 +13,7 @@
     "agents",
     "skills",
     "extensions",
+    "src",
     "test"
   ],
   "scripts": {
@@ -20,7 +21,8 @@
   },
   "pi": {
     "extensions": ["./extensions/shunt.ts"],
-    "skills": ["./skills"]
+    "skills": ["./skills"],
+    "agents": ["./agents"]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

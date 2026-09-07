@@ -1,6 +1,7 @@
 ---
 name: bulk-reader
 package: pi-shunt
+
 description: Reads multiple files on behalf of the parent and returns a tight, structured summary. Use when the parent would otherwise spend many tokens reading several large files just to answer one question. Read-only; never edits files.
 advertise: true
 model: anthropic/claude-haiku-4-5
