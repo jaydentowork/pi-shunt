@@ -1,6 +1,6 @@
 {
   "name": "@jaydentowork/pi-shunt",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "license": "MIT",
   "type": "module",
   "keywords": [
@@ -19,12 +19,20 @@
     "selfcheck": "node test/selfcheck.mjs"
   },
   "pi": {
-    "extensions": ["./extensions/shunt.ts"],
-    "skills": ["./skills"],
-    "agents": ["./agents"]
+    "extensions": [
+      "./extensions/shunt.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "pi-subagents": "*"
+  },
+  "pi-subagents": {
+    "agents": [
+      "./agents"
+    ]
   }
 }
