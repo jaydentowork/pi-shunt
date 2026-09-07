@@ -62,8 +62,6 @@ function resolveAgainst(cwd: string, filePath: string): string {
 // --- /shunt command helpers ---------------------------------------------
 
 function settingsPath(ctx: ExtensionContext): string {
-  // ctx.cwd is the project cwd; the user agent dir lives at ~/.pi/agent.
-  // Project-local settings win when present (not currently exposed here).
   const agentDir = (ctx as unknown as { getAgentDir?: () => string }).getAgentDir?.();
   if (typeof agentDir === "string" && agentDir.length > 0) {
     return path.join(agentDir, "settings.json");
@@ -96,17 +94,23 @@ function snapshot(settings: Record<string, unknown>) {
   };
 }
 
-function listAvailableModels(registry: ExtensionContext["modelRegistry"]): { id: string; label: string }[] {
+function listUsableModels(registry: ExtensionContext["modelRegistry"]): { id: string; label: string }[] {
   const registryAny = registry as unknown as {
-    getAll?: () => Array<{ provider: string; id: string; name?: string }>;
-    getAvailable?: () => Array<{ provider: string; id: string; name?: string }>;
+    getAll?: () => Array<unknown>;
+    hasConfiguredAuth?: (model: unknown) => boolean;
   };
-  const get = registryAny.getAll ?? registryAny.getAvailable;
+  const get = registryAny.getAll;
   if (typeof get !== "function") return [];
   const all = get.call(registry) ?? [];
+  const hasAuth = registryAny.hasConfiguredAuth;
   const unique = new Map<string, { id: string; label: string }>();
-  for (const m of all) {
+  for (const raw of all) {
+    const m = raw as { provider?: unknown; id?: unknown; name?: unknown };
     if (!m || typeof m.provider !== "string" || typeof m.id !== "string") continue;
+    // Filter to models the user can actually run. Without this the picker
+    // shows every catalog entry; the selected one would then fail at
+    // delegation time with a missing-API-key error.
+    if (typeof hasAuth === "function" && !hasAuth.call(registry, m)) continue;
     const label = `${m.provider}/${m.id}${m.name ? `  ${m.name}` : ""}`;
     if (!unique.has(label)) unique.set(label, { id: `${m.provider}/${m.id}`, label });
   }
@@ -168,9 +172,12 @@ async function editModel(args: string, ctx: ExtensionContext, filePath: string) 
     return;
   }
 
-  const models = listAvailableModels(ctx.modelRegistry);
+  const models = listUsableModels(ctx.modelRegistry);
   if (models.length === 0) {
-    ctx.ui.notify("No models in the registry. Add a provider with /login first.", "error");
+    ctx.ui.notify(
+      "No models available with configured credentials. Add a provider with /login first.",
+      "error",
+    );
     return;
   }
 
@@ -217,6 +224,7 @@ function reset(ctx: ExtensionContext, filePath: string) {
     "info",
   );
 }
+
 async function mainMenu(ctx: ExtensionContext, filePath: string) {
   const pick = await ctx.ui.select("shunt — pick a setting to edit", [
     "show current values",
@@ -244,7 +252,6 @@ async function mainMenu(ctx: ExtensionContext, filePath: string) {
 // --- entry point --------------------------------------------------------
 
 export default function (pi: ExtensionAPI) {
-  // /shunt command — also covers configuration UI.
   pi.registerCommand("shunt", {
     description: "Configure shunt: threshold, byte ceiling, worker model",
     handler: async (args, ctx) => {
@@ -281,7 +288,7 @@ export default function (pi: ExtensionAPI) {
               "  /shunt                       menu",
               "  /shunt threshold <int>       set SHUNT_MIN_LINES",
               "  /shunt ceiling <int>         set SHUNT_BYTE_CEILING",
-              "  /shunt model [clear]         set worker model",
+              "  /shunt model [clear]         set worker model (filtered to configured providers)",
               "  /shunt show                  show current values",
               "  /shunt reset                 remove all shunt entries",
             ].join("\n"),
@@ -294,7 +301,6 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Tool-call gate for oversized reads.
   pi.on("tool_call", (event, ctx: ExtensionContext) => {
     const config = resolveConfig({
       minLines: process.env.SHUNT_MIN_LINES,

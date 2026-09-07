@@ -287,6 +287,54 @@ group("settings round-trip", () => {
   check("formatSnapshot mentions model", snap.includes("worker model"));
 });
 
+// --- model picker filtering ---
+group("model picker filtering", () => {
+  // Mirror of listUsableModels() in extensions/shunt.ts. The picker must
+  // skip models the user has no credentials for; otherwise the chosen
+  // model would fail at delegation time.
+  function listUsable(registry) {
+    const all = registry.getAll?.() ?? [];
+    const hasAuth = registry.hasConfiguredAuth;
+    const unique = new Map();
+    for (const raw of all) {
+      if (!raw || typeof raw.provider !== "string" || typeof raw.id !== "string") continue;
+      if (typeof hasAuth === "function" && !hasAuth.call(registry, raw)) continue;
+      const id = `${raw.provider}/${raw.id}`;
+      if (!unique.has(id)) unique.set(id, id);
+    }
+    return Array.from(unique.values()).sort();
+  }
+
+  const empty = { getAll: () => [] };
+  check("empty registry -> empty list", listUsable(empty).length === 0);
+
+  const mixed = {
+    getAll: () => [
+      { provider: "anthropic", id: "claude-haiku-4-5" },
+      { provider: "openai", id: "gpt-4o-mini" },
+      { provider: "google", id: "gemini-2.5-flash" },
+    ],
+    hasConfiguredAuth: (m) => m.provider === "anthropic" || m.provider === "google",
+  };
+  const usable = listUsable(mixed);
+  check(
+    "only configured providers survive",
+    JSON.stringify(usable) === JSON.stringify(["anthropic/claude-haiku-4-5", "google/gemini-2.5-flash"]),
+  );
+
+  const noAuth = { getAll: () => [{ provider: "x", id: "y" }] };
+  check("missing hasConfiguredAuth falls back to all", listUsable(noAuth).length === 1);
+
+  const dup = {
+    getAll: () => [
+      { provider: "anthropic", id: "claude-haiku-4-5" },
+      { provider: "anthropic", id: "claude-haiku-4-5" },
+    ],
+    hasConfiguredAuth: () => true,
+  };
+  check("duplicates deduped", listUsable(dup).length === 1);
+});
+
 // --- worker exemption ---
 group("worker exemption", () => {
   // The parent extension runs only in the parent's tool_call stream.
